@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import Mock, patch
 from src.redactor import PIIRedactor
 from src.llm_client import LLMClient
+from src.unredactor import unredact
 
 
 def test_redact_ssn():
@@ -244,3 +245,160 @@ def test_llm_client_with_different_model():
         call_kwargs = mock_create.call_args[1]
         assert call_kwargs['model'] == "gpt-3.5-turbo"
         assert result == "Response from gpt-3.5-turbo"
+
+
+# ============================================================================
+# Unredactor Tests
+# ============================================================================
+
+def test_unredact_single_placeholder():
+    """Test replacing a single placeholder in text."""
+    text = "My SSN is US_SSN_0001"
+    mappings = {"US_SSN_0001": "123-45-6789"}
+
+    result = unredact(text, mappings)
+
+    assert result == "My SSN is 123-45-6789"
+    assert "US_SSN_0001" not in result
+
+
+def test_unredact_multiple_occurrences():
+    """Test same placeholder appears multiple times."""
+    text = "Send to EMAIL_ADDRESS_0001 and CC EMAIL_ADDRESS_0001"
+    mappings = {"EMAIL_ADDRESS_0001": "john@example.com"}
+
+    result = unredact(text, mappings)
+
+    assert result == "Send to john@example.com and CC john@example.com"
+    assert "EMAIL_ADDRESS_0001" not in result
+    # Verify both occurrences were replaced
+    assert result.count("john@example.com") == 2
+
+
+def test_unredact_multiple_different_placeholders():
+    """Test multiple different PII types in same text."""
+    text = "Contact US_SSN_0001 at EMAIL_ADDRESS_0001 or call PHONE_NUMBER_0001"
+    mappings = {
+        "US_SSN_0001": "123-45-6789",
+        "EMAIL_ADDRESS_0001": "john@example.com",
+        "PHONE_NUMBER_0001": "555-123-4567"
+    }
+
+    result = unredact(text, mappings)
+
+    assert result == "Contact 123-45-6789 at john@example.com or call 555-123-4567"
+    assert "US_SSN_0001" not in result
+    assert "EMAIL_ADDRESS_0001" not in result
+    assert "PHONE_NUMBER_0001" not in result
+
+
+def test_unredact_no_placeholders():
+    """Test text without placeholders passes through unchanged."""
+    text = "This is normal text without any placeholders."
+    mappings = {"EMAIL_ADDRESS_0001": "john@example.com"}
+
+    result = unredact(text, mappings)
+
+    assert result == text
+
+
+def test_unredact_empty_text():
+    """Test empty text handling."""
+    text = ""
+    mappings = {"US_SSN_0001": "123-45-6789"}
+
+    result = unredact(text, mappings)
+
+    assert result == ""
+
+
+def test_unredact_empty_mappings():
+    """Test text with empty mappings passes through unchanged."""
+    text = "Some text with US_SSN_0001 placeholder"
+    mappings = {}
+
+    result = unredact(text, mappings)
+
+    assert result == text
+
+
+def test_unredact_no_matching_placeholder():
+    """Test when placeholder in mappings is not found in text."""
+    text = "This text has no placeholders"
+    mappings = {"EMAIL_ADDRESS_0001": "john@example.com"}
+
+    result = unredact(text, mappings)
+
+    # Text should be unchanged
+    assert result == text
+
+
+def test_unredact_partial_match_prevention():
+    """Test that only exact placeholder matches are replaced."""
+    text = "Contact EMAIL_ADDRESS_0001 but not EMAIL_ADDRESS_0002"
+    mappings = {"EMAIL_ADDRESS_0001": "john@example.com"}
+
+    result = unredact(text, mappings)
+
+    # Only the first placeholder should be replaced
+    assert "john@example.com" in result
+    assert "EMAIL_ADDRESS_0002" in result
+    assert "EMAIL_ADDRESS_0001" not in result
+
+
+def test_unredact_preserves_text_structure():
+    """Test that text structure and formatting is preserved."""
+    text = """Dear US_SSN_0001,
+
+    Your email EMAIL_ADDRESS_0001 is confirmed.
+    Call PHONE_NUMBER_0001 for support.
+
+    Thank you!"""
+
+    mappings = {
+        "US_SSN_0001": "123-45-6789",
+        "EMAIL_ADDRESS_0001": "john@example.com",
+        "PHONE_NUMBER_0001": "555-123-4567"
+    }
+
+    result = unredact(text, mappings)
+
+    expected = """Dear 123-45-6789,
+
+    Your email john@example.com is confirmed.
+    Call 555-123-4567 for support.
+
+    Thank you!"""
+
+    assert result == expected
+
+
+def test_unredact_integration_with_redactor():
+    """Test full redact -> unredact cycle."""
+    redactor = PIIRedactor()
+    original_text = "My SSN is 856-45-6789 and email is test@example.com"
+
+    # Redact the text
+    redacted_text, mappings = redactor.redact(original_text)
+
+    # Verify it was redacted
+    assert "856-45-6789" not in redacted_text
+    assert "test@example.com" not in redacted_text
+
+    # Unredact it
+    restored_text = unredact(redacted_text, mappings)
+
+    # Verify we got the original back
+    assert restored_text == original_text
+    assert "856-45-6789" in restored_text
+    assert "test@example.com" in restored_text
+
+
+def test_unredact_with_special_characters():
+    """Test unredaction with special characters in original values."""
+    text = "Password is EMAIL_ADDRESS_0001"
+    mappings = {"EMAIL_ADDRESS_0001": "user+tag@example.com"}
+
+    result = unredact(text, mappings)
+
+    assert result == "Password is user+tag@example.com"
