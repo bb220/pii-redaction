@@ -1,7 +1,7 @@
 import pandas as pd
 from src.redactor import PIIRedactor
 from src.llm_client import LLMClient
-from src.unredactor import unredact
+from src.unredactor import unredact, StreamingUnredactor
 
 
 class RequestProcessor:
@@ -99,6 +99,108 @@ class RequestProcessor:
                 'mappings': None,
                 'llm_response_redacted': None,
                 'final_response': None,
+                'error': str(e)
+            }
+
+    def process_request_stream(self, system_prompt, user_prompt):
+        """
+        Process a single request through the streaming pipeline.
+
+        This method yields unredacted chunks in real-time as the LLM generates
+        its response, providing a better user experience for longer responses.
+
+        Pipeline steps:
+        1. Redact PII from both system and user prompts
+        2. Merge mappings from both prompts
+        3. Stream LLM response chunks
+        4. Use StreamingUnredactor to safely unredact without exposing partial placeholders
+        5. Yield final chunk after flushing buffer
+
+        Args:
+            system_prompt (str): System prompt (may contain PII)
+            user_prompt (str): User prompt (may contain PII)
+
+        Yields:
+            dict: Chunks and metadata:
+                - type: 'metadata' (initial info) or 'chunk' (streaming content) or 'final' (completion info)
+                - For 'metadata': redacted_system, redacted_user, mappings
+                - For 'chunk': content (unredacted text chunk)
+                - For 'final': complete unredacted response
+                - error: Error message if processing failed (None on success)
+
+        Example:
+            >>> processor = RequestProcessor(api_key="sk-...")
+            >>> for item in processor.process_request_stream(
+            ...     system_prompt="You are a helpful assistant.",
+            ...     user_prompt="Tell me about EMAIL_ADDRESS_0001"
+            ... ):
+            ...     if item['type'] == 'chunk':
+            ...         print(item['content'], end='', flush=True)
+        """
+        try:
+            # Step 1: Redact both prompts
+            redacted_system, system_mappings = self.redactor.redact(system_prompt)
+            redacted_user, user_mappings = self.redactor.redact(user_prompt)
+
+            # Step 2: Combine mappings from both prompts
+            all_mappings = {**system_mappings, **user_mappings}
+
+            # Yield metadata about the redaction
+            yield {
+                'type': 'metadata',
+                'original_system': system_prompt,
+                'original_user': user_prompt,
+                'redacted_system': redacted_system,
+                'redacted_user': redacted_user,
+                'mappings': all_mappings,
+                'error': None
+            }
+
+            # Step 3: Initialize streaming unredactor
+            streaming_unredactor = StreamingUnredactor(all_mappings)
+
+            # Step 4: Stream LLM response and unredact chunks
+            full_response = ""
+            for chunk in self.llm_client.complete_stream(
+                system_prompt=redacted_system,
+                user_prompt=redacted_user
+            ):
+                # Process chunk through streaming unredactor
+                safe_output = streaming_unredactor.process_chunk(chunk)
+                full_response += chunk
+
+                # Only yield if we have safe output
+                if safe_output:
+                    yield {
+                        'type': 'chunk',
+                        'content': safe_output,
+                        'error': None
+                    }
+
+            # Step 5: Flush the buffer to get remaining text
+            final_chunk = streaming_unredactor.finalize()
+            if final_chunk:
+                yield {
+                    'type': 'chunk',
+                    'content': final_chunk,
+                    'error': None
+                }
+
+            # Yield final completion message with full response
+            final_response = unredact(full_response, all_mappings)
+            yield {
+                'type': 'final',
+                'llm_response_redacted': full_response,
+                'final_response': final_response,
+                'error': None
+            }
+
+        except Exception as e:
+            # Return error information
+            yield {
+                'type': 'error',
+                'original_system': system_prompt,
+                'original_user': user_prompt,
                 'error': str(e)
             }
 

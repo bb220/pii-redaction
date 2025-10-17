@@ -57,3 +57,47 @@ class LLMClient:
 
         except Exception as e:
             raise Exception(f"OpenAI API call failed: {str(e)}")
+
+    def complete_stream(self, system_prompt, user_prompt):
+        """
+        Send prompts to OpenAI and get streaming completion response.
+
+        This method yields response chunks as they arrive from the LLM,
+        enabling real-time output. Use with StreamingUnredactor for safe
+        PII unredaction without exposing partial placeholders.
+
+        Args:
+            system_prompt (str): System message that sets context/behavior
+            user_prompt (str): User message with the actual request
+
+        Yields:
+            str: Response chunks from the LLM as they arrive
+
+        Raises:
+            Exception: If API call fails
+
+        Example:
+            >>> client = LLMClient(api_key="sk-...")
+            >>> for chunk in client.complete_stream(
+            ...     system_prompt="You are a helpful assistant",
+            ...     user_prompt="Tell me a story"
+            ... ):
+            ...     print(chunk, end='', flush=True)
+        """
+        try:
+            stream = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                stream=True
+            )
+
+            for chunk in stream:
+                # Extract content from the chunk
+                if chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+
+        except Exception as e:
+            raise Exception(f"OpenAI API streaming call failed: {str(e)}")
