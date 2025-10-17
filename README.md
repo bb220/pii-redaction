@@ -15,7 +15,6 @@ This system provides a secure pipeline for handling sensitive data in LLM intera
 - Automatic detection of SSN, email addresses, and phone numbers using Microsoft Presidio
 - Unique placeholder generation to maintain context and traceability
 - **Real-time streaming support** with safe PII unredaction (prevents partial placeholder exposure)
-- CSV batch processing support
 - Comprehensive error handling
 - Full test coverage
 
@@ -46,7 +45,6 @@ Create a `.env` file in the project root:
 
 ```bash
 OPENAI_API_KEY=your_api_key_here
-OPENAI_MODEL=gpt-4o-mini
 ```
 
 ## Usage
@@ -71,122 +69,13 @@ Both demos process requests from data/requests.csv and display:
 The streaming demo uses real-time output:
 - Displays LLM responses as they're generated (streaming)
 - Safe buffer strategy prevents partial placeholder exposure
-- Same CSV processing as demo.py but with streaming enabled
 
-### Using in Your Code
-
-#### Single Request Processing
-
-```python
-import os
-from dotenv import load_dotenv
-from src.processor import RequestProcessor
-
-# Load environment variables
-load_dotenv()
-
-# Initialize processor
-processor = RequestProcessor(
-    api_key=os.getenv("OPENAI_API_KEY"),
-    model="gpt-4o-mini"
-)
-
-# Process a single request
-result = processor.process_request(
-    system_prompt="You are a helpful assistant.",
-    user_prompt="Please email john.doe@example.com about my SSN 123-45-6789"
-)
-
-# Access results
-print(f"Final Response: {result['final_response']}")
-print(f"PII Detected: {result['mappings']}")
-```
-
-#### Streaming Request Processing
-
-For better user experience with longer responses, use streaming to display results in real-time:
-
-```python
-import os
-from dotenv import load_dotenv
-from src.processor import RequestProcessor
-
-# Load environment variables
-load_dotenv()
-
-# Initialize processor
-processor = RequestProcessor(
-    api_key=os.getenv("OPENAI_API_KEY"),
-    model="gpt-4o-mini"
-)
-
-# Process with streaming
-for item in processor.process_request_stream(
-    system_prompt="You are a helpful assistant.",
-    user_prompt="Email john@example.com about SSN 856-45-6789"
-):
-    if item['type'] == 'metadata':
-        # First item - contains redaction info
-        print(f"PII detected: {item['mappings']}")
-
-    elif item['type'] == 'chunk':
-        # Stream chunks with PII safely unredacted
-        print(item['content'], end='', flush=True)
-
-    elif item['type'] == 'final':
-        # Final item - contains complete response
-        print(f"\n\nComplete response: {item['final_response']}")
-
-    elif item['type'] == 'error':
-        print(f"Error: {item['error']}")
-```
 
 **Key Benefits of Streaming:**
 - Immediate feedback to users (first token appears quickly)
 - Better UX for longer responses
 - Safe PII unredaction - partial placeholders are never exposed
 - Buffer strategy ensures no leakage of placeholder fragments like "EMAIL_ADDRESS_"
-
-#### CSV Batch Processing
-
-```python
-from src.processor import RequestProcessor
-
-processor = RequestProcessor(api_key="your-api-key")
-results = processor.process_csv("data/requests.csv")
-
-print(f"Processed {len(results)} requests")
-```
-
-#### Individual Components
-
-```python
-from src.redactor import PIIRedactor
-from src.unredactor import unredact, StreamingUnredactor
-from src.llm_client import LLMClient
-
-# Redact PII
-redactor = PIIRedactor()
-redacted_text, mappings = redactor.redact("My SSN is 123-45-6789")
-# Returns: ("My SSN is US_SSN_0001", {"US_SSN_0001": "123-45-6789"})
-
-# Unredact placeholders (non-streaming)
-original_text = unredact("My SSN is US_SSN_0001", mappings)
-# Returns: "My SSN is 123-45-6789"
-
-# Streaming unredaction
-streaming_unredactor = StreamingUnredactor(mappings)
-
-# Process chunks from LLM stream
-for chunk in llm_stream:
-    safe_output = streaming_unredactor.process_chunk(chunk)
-    if safe_output:
-        print(safe_output, end='', flush=True)
-
-# Flush remaining buffer
-final_output = streaming_unredactor.finalize()
-print(final_output, end='', flush=True)
-```
 
 ## CSV Format
 
@@ -314,25 +203,8 @@ pii-redaction/
 ## Future Enhancements
 
 - Add support for more entity types (credit cards, addresses, etc.)
-- Add async processing for better performance
-- Support multiple LLM providers (Anthropic, Cohere, etc.)
+- Support multiple LLM providers (Anthropic, Google, etc.)
 - Add detailed logging and audit trail
 - Implement confidence thresholds for PII detection
 - Add caching for repeated requests
-- Add retry logic for failed API calls
 
-## License
-
-This project is provided as-is for educational and demonstration purposes.
-
-## Contributing
-
-Contributions are welcome! Please ensure all tests pass before submitting changes:
-
-```bash
-pytest tests/ -v
-```
-
-## Support
-
-For issues or questions, please open an issue in the repository.
