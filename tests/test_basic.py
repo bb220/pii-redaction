@@ -1,5 +1,7 @@
 import pytest
+from unittest.mock import Mock, patch
 from src.redactor import PIIRedactor
+from src.llm_client import LLMClient
 
 
 def test_redact_ssn():
@@ -148,3 +150,97 @@ def test_counter_persistence():
     # Verify both mappings are separate
     assert mappings1["EMAIL_ADDRESS_0001"] == "first@example.com"
     assert mappings2["EMAIL_ADDRESS_0002"] == "second@example.com"
+
+
+# ============================================================================
+# LLM Client Tests
+# ============================================================================
+
+def test_llm_client_initialization():
+    """Test LLMClient can be initialized with API key."""
+    client = LLMClient(api_key="test-key-123", model="gpt-4")
+    assert client.model == "gpt-4"
+    assert client.client is not None
+
+
+def test_llm_client_complete_basic():
+    """Test basic completion with mocked OpenAI response."""
+    client = LLMClient(api_key="test-key-123")
+
+    # Create mock response
+    mock_response = Mock()
+    mock_response.choices = [Mock()]
+    mock_response.choices[0].message = Mock()
+    mock_response.choices[0].message.content = "This is a test response"
+
+    # Mock the OpenAI API call
+    with patch.object(client.client.chat.completions, 'create', return_value=mock_response):
+        result = client.complete(
+            system_prompt="You are a helpful assistant",
+            user_prompt="Hello"
+        )
+
+    assert result == "This is a test response"
+
+
+def test_llm_client_preserves_placeholders():
+    """Test that placeholders in prompts are preserved in response."""
+    client = LLMClient(api_key="test-key-123")
+
+    # Create mock response that echoes placeholders
+    mock_response = Mock()
+    mock_response.choices = [Mock()]
+    mock_response.choices[0].message = Mock()
+    mock_response.choices[0].message.content = "I'll send it to EMAIL_ADDRESS_0001"
+
+    with patch.object(client.client.chat.completions, 'create', return_value=mock_response):
+        result = client.complete(
+            system_prompt="You are a helpful assistant",
+            user_prompt="Send email to EMAIL_ADDRESS_0001"
+        )
+
+    # Verify placeholder is preserved
+    assert "EMAIL_ADDRESS_0001" in result
+
+
+def test_llm_client_handles_api_error():
+    """Test that API errors are properly caught and re-raised."""
+    client = LLMClient(api_key="test-key-123")
+
+    # Mock an API error
+    with patch.object(
+        client.client.chat.completions,
+        'create',
+        side_effect=Exception("API rate limit exceeded")
+    ):
+        with pytest.raises(Exception) as exc_info:
+            client.complete(
+                system_prompt="You are a helpful assistant",
+                user_prompt="Hello"
+            )
+
+        assert "OpenAI API call failed" in str(exc_info.value)
+        assert "API rate limit exceeded" in str(exc_info.value)
+
+
+def test_llm_client_with_different_model():
+    """Test LLMClient with a different model specification."""
+    client = LLMClient(api_key="test-key-123", model="gpt-3.5-turbo")
+    assert client.model == "gpt-3.5-turbo"
+
+    mock_response = Mock()
+    mock_response.choices = [Mock()]
+    mock_response.choices[0].message = Mock()
+    mock_response.choices[0].message.content = "Response from gpt-3.5-turbo"
+
+    with patch.object(client.client.chat.completions, 'create', return_value=mock_response) as mock_create:
+        result = client.complete(
+            system_prompt="You are a helpful assistant",
+            user_prompt="Test"
+        )
+
+        # Verify the correct model was used
+        mock_create.assert_called_once()
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs['model'] == "gpt-3.5-turbo"
+        assert result == "Response from gpt-3.5-turbo"
