@@ -63,17 +63,15 @@ python demo.py
 python demo_streaming.py
 ```
 
-The demo will process test requests and display:
+Both demos process requests from data/requests.csv and display:
 - Original prompts
 - Detected PII and generated placeholders
-- Redacted prompts sent to the LLM
-- LLM response with placeholders
-- Final response with original PII restored
+- LLM responses with original PII restored
 
-The streaming demo additionally shows:
-- Real-time streaming output as the LLM generates text
-- Safe buffer strategy that prevents partial placeholder exposure
-- Performance comparison between streaming and non-streaming modes
+The streaming demo uses real-time output:
+- Displays LLM responses as they're generated (streaming)
+- Safe buffer strategy prevents partial placeholder exposure
+- Same CSV processing as demo.py but with streaming enabled
 
 ### Using in Your Code
 
