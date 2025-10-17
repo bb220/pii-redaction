@@ -402,3 +402,168 @@ def test_unredact_with_special_characters():
     result = unredact(text, mappings)
 
     assert result == "Password is user+tag@example.com"
+
+
+# ============================================================================
+# RequestProcessor Tests
+# ============================================================================
+
+def test_processor_initialization():
+    """Test RequestProcessor can be initialized."""
+    from src.processor import RequestProcessor
+
+    processor = RequestProcessor(api_key="test-key-123", model="gpt-4")
+
+    assert processor.redactor is not None
+    assert processor.llm_client is not None
+    assert processor.llm_client.model == "gpt-4"
+
+
+def test_processor_process_request_with_pii():
+    """Test process_request() with PII in prompts."""
+    from src.processor import RequestProcessor
+
+    processor = RequestProcessor(api_key="test-key-123")
+
+    # Mock the LLM client response
+    mock_response = Mock()
+    mock_response.choices = [Mock()]
+    mock_response.choices[0].message = Mock()
+    mock_response.choices[0].message.content = "I'll send it to EMAIL_ADDRESS_0001"
+
+    with patch.object(processor.llm_client.client.chat.completions, 'create', return_value=mock_response):
+        result = processor.process_request(
+            system_prompt="You are a helpful assistant.",
+            user_prompt="Please email john@example.com"
+        )
+
+    # Verify the result structure
+    assert result['error'] is None
+    assert result['original_system'] == "You are a helpful assistant."
+    assert result['original_user'] == "Please email john@example.com"
+
+    # Verify PII was redacted
+    assert "john@example.com" not in result['redacted_user']
+    assert "EMAIL_ADDRESS_" in result['redacted_user']
+
+    # Verify mappings were captured
+    assert len(result['mappings']) == 1
+    email_key = list(result['mappings'].keys())[0]
+    assert result['mappings'][email_key] == "john@example.com"
+
+    # Verify response was unredacted
+    assert result['llm_response_redacted'] == "I'll send it to EMAIL_ADDRESS_0001"
+    assert "john@example.com" in result['final_response']
+
+
+def test_processor_process_request_no_pii():
+    """Test process_request() with no PII in prompts."""
+    from src.processor import RequestProcessor
+
+    processor = RequestProcessor(api_key="test-key-123")
+
+    # Mock the LLM client response
+    mock_response = Mock()
+    mock_response.choices = [Mock()]
+    mock_response.choices[0].message = Mock()
+    mock_response.choices[0].message.content = "Hello! How can I help you?"
+
+    with patch.object(processor.llm_client.client.chat.completions, 'create', return_value=mock_response):
+        result = processor.process_request(
+            system_prompt="You are a helpful assistant.",
+            user_prompt="Hello"
+        )
+
+    # Verify no PII was detected
+    assert result['error'] is None
+    assert len(result['mappings']) == 0
+    assert result['redacted_system'] == result['original_system']
+    assert result['redacted_user'] == result['original_user']
+    assert result['final_response'] == "Hello! How can I help you?"
+
+
+def test_processor_process_request_multiple_pii():
+    """Test process_request() with multiple PII types."""
+    from src.processor import RequestProcessor
+
+    processor = RequestProcessor(api_key="test-key-123")
+
+    # Mock the LLM client response
+    mock_response = Mock()
+    mock_response.choices = [Mock()]
+    mock_response.choices[0].message = Mock()
+    mock_response.choices[0].message.content = "Contact US_SSN_0001 at EMAIL_ADDRESS_0001 or PHONE_NUMBER_0001"
+
+    with patch.object(processor.llm_client.client.chat.completions, 'create', return_value=mock_response):
+        result = processor.process_request(
+            system_prompt="You are a tax assistant. Client SSN: 856-45-6789",
+            user_prompt="My email is john@example.com and phone is 555-123-4567"
+        )
+
+    # Verify all PII was detected
+    assert result['error'] is None
+    assert len(result['mappings']) == 3
+
+    # Verify all PII types are in mappings
+    mapping_types = [key.split('_')[0] + '_' + key.split('_')[1] for key in result['mappings'].keys()]
+    assert 'US_SSN' in mapping_types
+    assert 'EMAIL_ADDRESS' in mapping_types
+    assert 'PHONE_NUMBER' in mapping_types
+
+    # Verify final response has original values restored
+    assert "856-45-6789" in result['final_response']
+    assert "john@example.com" in result['final_response']
+    assert "555-123-4567" in result['final_response']
+
+
+def test_processor_process_request_error_handling():
+    """Test process_request() handles LLM errors gracefully."""
+    from src.processor import RequestProcessor
+
+    processor = RequestProcessor(api_key="test-key-123")
+
+    # Mock an API error
+    with patch.object(
+        processor.llm_client.client.chat.completions,
+        'create',
+        side_effect=Exception("API rate limit exceeded")
+    ):
+        result = processor.process_request(
+            system_prompt="You are a helpful assistant.",
+            user_prompt="Hello"
+        )
+
+    # Verify error was captured
+    assert result['error'] is not None
+    assert "API rate limit exceeded" in result['error']
+    assert result['final_response'] is None
+
+
+def test_processor_combines_mappings_from_both_prompts():
+    """Test that mappings from system and user prompts are combined."""
+    from src.processor import RequestProcessor
+
+    processor = RequestProcessor(api_key="test-key-123")
+
+    # Mock the LLM client response
+    mock_response = Mock()
+    mock_response.choices = [Mock()]
+    mock_response.choices[0].message = Mock()
+    mock_response.choices[0].message.content = "Processing for US_SSN_0001 and EMAIL_ADDRESS_0001"
+
+    with patch.object(processor.llm_client.client.chat.completions, 'create', return_value=mock_response):
+        result = processor.process_request(
+            system_prompt="Client SSN: 856-45-6789",
+            user_prompt="Email: john@example.com"
+        )
+
+    # Verify both mappings are present
+    assert result['error'] is None
+    assert len(result['mappings']) == 2
+
+    # Find the SSN and email keys
+    ssn_key = [k for k in result['mappings'].keys() if k.startswith("US_SSN_")][0]
+    email_key = [k for k in result['mappings'].keys() if k.startswith("EMAIL_ADDRESS_")][0]
+
+    assert result['mappings'][ssn_key] == "856-45-6789"
+    assert result['mappings'][email_key] == "john@example.com"
